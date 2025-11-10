@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>🔐 Cloud Secure Document (Supabase)</title>
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- Supabase JS SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.7.1/dist/umd/supabase.js"></script>
+
+    <!-- CryptoJS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+
+    <!-- App -->
+    <script type="module" src="app.js"></script>
+  </head>
+
+  <body>
+    <div class="container">
+      <h1>🔐 Cloud Secure Document</h1>
+
+      <!-- AUTH SECTION -->
+      <div id="auth-section">
+        <input type="email" id="email" placeholder="Email" />
+        <input type="password" id="password" placeholder="Password" />
+        <button id="login-btn">Login</button>
+        <button id="register-btn">Register</button>
+      </div>
+
+      <!-- UPLOAD SECTION -->
+      <div id="upload-section" class="hidden">
+        <p id="user-email"></p>
+        <input type="file" id="file-input" />
+        <input type="text" id="key" placeholder="Kunci Enkripsi (rahasia)" />
+        <button id="encrypt-upload">🔒 Enkripsi & Upload</button>
+        <button id="logout-btn">Logout</button>
+
+        <div id="output" class="hidden">
+          <p>✅ File terenkripsi & berhasil diupload:</p>
+          <a id="download-link" target="_blank"></a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
