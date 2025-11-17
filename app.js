@@ -124,35 +124,26 @@ uploadBtn.addEventListener("click", async () => {
 
   const file = fileInput.files[0];
   const key = keyInput.value;
-
   if (!file || !key) return alert("Lengkapi semua data!");
 
   const reader = new FileReader();
   reader.onload = async (e) => {
-    try {
-      const bytes = new Uint8Array(e.target.result);
-      const wordArray = CryptoJS.lib.WordArray.create(bytes);
+    const bytes = new Uint8Array(e.target.result);
+    const wordArray = CryptoJS.lib.WordArray.create(bytes);
 
-      // HASIL ENKRIPSI BASE64 STRING
-      const encryptedBase64 = CryptoJS.AES.encrypt(wordArray, key).toString();
+    // 🔐 Enkripsi → menghasilkan ciphertext Base64
+    const encrypted = CryptoJS.AES.encrypt(wordArray, key).toString();
 
-      // SIMPAN SEBAGAI TEXT (BUKAN BLOB BINARY)
-      const blob = new Blob([encryptedBase64], { type: "text/plain" });
+    // Simpan sebagai text murni
+    const blob = new Blob([encrypted], { type: "text/plain" });
 
-      const path = `${session.user.id}/${file.name}.enc`;
+    const path = `${session.user.id}/${file.name}.enc`;
+    const { error } = await supabase.storage.from("secure-files").upload(path, blob, { upsert: true });
 
-      const { error } = await supabase.storage
-        .from("secure-files")
-        .upload(path, blob, { upsert: true });
+    if (error) return alert("Gagal upload: " + error.message);
 
-      if (error) throw error;
-
-      alert("File terenkripsi & berhasil diupload!");
-      await listUserFiles(session.user.id);
-
-    } catch (err) {
-      alert("Gagal upload: " + err.message);
-    }
+    alert("File terenkripsi & berhasil diupload!");
+    listUserFiles(session.user.id);
   };
 
   reader.readAsArrayBuffer(file);
@@ -196,23 +187,29 @@ async function downloadDecryptedFile(path, filename) {
   const key = prompt("Masukkan kunci enkripsi:");
   if (!key) return;
 
-  // Ambil SEBAGAI TEXT, karena disimpan sebagai base64 string
+  // Ambil ciphertext Base64 sebagai TEXT
   const { data } = await supabase.storage.from("secure-files").download(path);
-  const text = await data.text();  // ⚠️ penting!
+  const encryptedBase64 = await data.text();
 
-  // text = base64 encrypted string
-  const decrypted = CryptoJS.AES.decrypt(text, key);
+  // Convert Base64 → ciphertext CryptoJS
+  const cipherParams = {
+    ciphertext: CryptoJS.enc.Base64.parse(encryptedBase64)
+  };
 
-  // convert kembali ke bytes asli
-  const bytes = new Uint8Array(decrypted.sigBytes);
+  // 🔓 Dekripsi (hasil = WordArray)
+  const decrypted = CryptoJS.AES.decrypt(cipherParams, key);
+
+  // WordArray → Uint8Array
+  const uint8 = new Uint8Array(decrypted.sigBytes);
   for (let i = 0; i < decrypted.sigBytes; i++) {
-    bytes[i] = decrypted.words[i >>> 2] >>> (24 - (i % 4) * 8);
+    uint8[i] = (decrypted.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
   }
 
-  const blob = new Blob([bytes], { type: "application/octet-stream" });
+  const blob = new Blob([uint8], { type: "application/octet-stream" });
 
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename.replace(".enc", "");
   a.click();
 }
+
