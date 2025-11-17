@@ -24,6 +24,30 @@ const output = document.getElementById("output");
 const downloadLink = document.getElementById("download-link");
 const fileList = document.getElementById("file-list");
 
+// === UTIL: konversi WordArray <-> Uint8Array ===
+function wordArrayToUint8Array(wordArray) {
+  // wordArray: CryptoJS.lib.WordArray
+  const words = wordArray.words;
+  const sigBytes = wordArray.sigBytes;
+  const u8 = new Uint8Array(sigBytes);
+  let idx = 0;
+  for (let i = 0; i < words.length; i++) {
+    // setiap word adalah 32 bit (4 bytes), big-endian
+    const word = words[i];
+    // ambil 4 byte
+    const b0 = (word >>> 24) & 0xff;
+    const b1 = (word >>> 16) & 0xff;
+    const b2 = (word >>> 8) & 0xff;
+    const b3 = word & 0xff;
+    if (idx < sigBytes) u8[idx++] = b0;
+    if (idx < sigBytes) u8[idx++] = b1;
+    if (idx < sigBytes) u8[idx++] = b2;
+    if (idx < sigBytes) u8[idx++] = b3;
+    if (idx >= sigBytes) break;
+  }
+  return u8;
+}
+
 // === VALIDASI EMAIL ===
 function isRealEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -38,19 +62,16 @@ registerBtn.addEventListener("click", async () => {
     return alert("Email tidak valid, gunakan email asli");
   }
 
-  // cek apakah sudah ada
-  const { data: existing } = await supabase.auth.signInWithPassword({
-    email, password: pass
-  }).catch(()=>({ data: null }));
-
-  if (existing?.user) {
-    return alert("Email sudah terdaftar, silahkan login");
+  // cek apakah sudah ada dengan endpoint signUp (lebih andal dibanding memanggil signInWithPassword)
+  // Kita coba daftar; jika sudah terdaftar Supabase akan memberi tahu error email already registered.
+  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({ email, password: pass });
+  if (signUpError) {
+    // jika sudah terdaftar, beritahu user agar login
+    if (signUpError.message && signUpError.message.toLowerCase().includes("already")) {
+      return alert("Email sudah terdaftar, silahkan login");
+    }
+    return alert("Registrasi gagal: " + signUpError.message);
   }
-
-  // daftar baru
-  const { error } = await supabase.auth.signUp({ email, password: pass });
-
-  if (error) return alert("Registrasi gagal: " + error.message);
 
   alert("Registrasi berhasil! Silakan cek email kamu dan klik link verifikasi sebelum login.");
 });
@@ -64,14 +85,19 @@ loginBtn.addEventListener("click", async () => {
     return alert("Login gagal, email tidak terdaftar");
   }
 
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email, password: pass
-  });
+  // coba login
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password: pass });
 
-  if (error?.message.includes("Invalid login credentials")) {
-    return alert("Email belum terdaftar, registrasi terlebih dahulu");
+  if (error) {
+    // beda pesan tergantung error
+    if (error.message && error.message.toLowerCase().includes("invalid login credentials")) {
+      return alert("Email belum terdaftar, registrasi terlebih dahulu");
+    }
+    // jika akun belum diverifikasi, Supabase biasanya tetap mengizinkan sign-in, tapi cek di project Anda
+    return alert("Login gagal: " + error.message);
   }
 
+  // reload atau update UI
   location.reload();
 });
 
@@ -87,12 +113,14 @@ async function checkUser() {
 
   if (data.user) {
     authSection.classList.add("hidden");
-    helpSection.classList.add("hidden");
+    if (helpSection) helpSection.classList.add("hidden");
     uploadSection.classList.remove("hidden");
     userEmail.textContent = "Login sebagai: " + data.user.email;
 
-    // cek email verifikasi
-    if (!data.user.email_confirmed_at) {
+    // cek verifikasi jika Anda menyimpan email_confirmed_at di metadata (beberapa setup supabase)
+    if (data.user && data.user.email && data.user.email_confirmed_at === undefined) {
+      // beberapa setup Supabase tidak expose field ini langsung; jika tidak ada, abaikan
+    } else if (data.user.email_confirmed_at === null) {
       alert("Email belum diverifikasi. Cek email kamu terlebih dahulu.");
       uploadBtn.disabled = true;
       return;
@@ -101,7 +129,6 @@ async function checkUser() {
     }
 
     await listUserFiles(data.user.id);
-
   } else {
     authSection.classList.remove("hidden");
     uploadSection.classList.add("hidden");
@@ -109,46 +136,48 @@ async function checkUser() {
 }
 checkUser();
 
-// === UTIL BASE64 → BUFFER ===
-function base64ToUint8Array(base64) {
-  const raw = atob(base64);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
-}
-
 // === ENKRIPSI & UPLOAD ===
 uploadBtn.addEventListener("click", async () => {
   const { data: session } = await supabase.auth.getUser();
-  if (!session.user) return alert("Harus login!");
+  if (!session?.user) return alert("Harus login!");
 
   const file = fileInput.files[0];
   const key = keyInput.value;
+
   if (!file || !key) return alert("Lengkapi semua data!");
 
   const reader = new FileReader();
   reader.onload = async (e) => {
-    const bytes = new Uint8Array(e.target.result);
-    const wordArray = CryptoJS.lib.WordArray.create(bytes);
+    try {
+      // baca file menjadi Uint8Array
+      const bytes = new Uint8Array(e.target.result);
 
-    // 🔐 Enkripsi → menghasilkan ciphertext Base64
-    const encrypted = CryptoJS.AES.encrypt(wordArray, key).toString();
+      // ubah ke WordArray CryptoJS
+      const wordArray = CryptoJS.lib.WordArray.create(bytes);
 
-    // Simpan sebagai text murni
-    const blob = new Blob([encrypted], { type: "text/plain" });
+      // encrypt -> menghasilkan string base64 (CipherParams -> toString)
+      const encryptedBase64 = CryptoJS.AES.encrypt(wordArray, key).toString();
 
-    const path = `${session.user.id}/${file.name}.enc`;
-    const { error } = await supabase.storage.from("secure-files").upload(path, blob, { upsert: true });
+      // simpan teks base64 ciphertext ke storage
+      const blob = new Blob([encryptedBase64], { type: "text/plain;charset=utf-8" });
+      const path = `${session.user.id}/${file.name}.enc`;
 
-    if (error) return alert("Gagal upload: " + error.message);
+      const { error } = await supabase.storage
+        .from("secure-files")
+        .upload(path, blob, { upsert: true });
 
-    alert("File terenkripsi & berhasil diupload!");
-    listUserFiles(session.user.id);
+      if (error) throw error;
+
+      alert("File terenkripsi & berhasil diupload!");
+      await listUserFiles(session.user.id);
+    } catch (err) {
+      console.error(err);
+      alert("Gagal upload: " + (err.message || JSON.stringify(err)));
+    }
   };
 
   reader.readAsArrayBuffer(file);
 });
-
 
 // === LIST FILE ===
 async function listUserFiles(uid) {
@@ -182,34 +211,42 @@ async function listUserFiles(uid) {
   });
 }
 
-// === DOWNLOAD DEKRIPSI ===
+// === DOWNLOAD & DEKRIPSI ===
 async function downloadDecryptedFile(path, filename) {
   const key = prompt("Masukkan kunci enkripsi:");
   if (!key) return;
 
-  // Ambil ciphertext Base64 sebagai TEXT
-  const { data } = await supabase.storage.from("secure-files").download(path);
-  const encryptedBase64 = await data.text();
+  try {
+    // download blob dari storage
+    const { data: blobData, error: downloadError } = await supabase.storage.from("secure-files").download(path);
+    if (downloadError) throw downloadError;
 
-  // Convert Base64 → ciphertext CryptoJS
-  const cipherParams = {
-    ciphertext: CryptoJS.enc.Base64.parse(encryptedBase64)
-  };
+    // kita simpan ciphertext (base64) sebagai teks saat upload, sehingga ambil .text()
+    const ciphertextBase64 = await blobData.text();
 
-  // 🔓 Dekripsi (hasil = WordArray)
-  const decrypted = CryptoJS.AES.decrypt(cipherParams, key);
+    // dekripsi -> menghasilkan WordArray plain
+    const decryptedWordArray = CryptoJS.AES.decrypt(ciphertextBase64, key);
 
-  // WordArray → Uint8Array
-  const uint8 = new Uint8Array(decrypted.sigBytes);
-  for (let i = 0; i < decrypted.sigBytes; i++) {
-    uint8[i] = (decrypted.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+    // jika kunci salah atau dekripsi gagal, sigBytes bisa 0
+    if (!decryptedWordArray || !decryptedWordArray.sigBytes || decryptedWordArray.sigBytes === 0) {
+      return alert("Gagal dekripsi: kunci salah atau file tidak valid.");
+    }
+
+    // konversi WordArray ke Uint8Array
+    const plainBytes = wordArrayToUint8Array(decryptedWordArray);
+
+    // buat blob dan unduh
+    const plainBlob = new Blob([plainBytes], { type: "application/octet-stream" });
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(plainBlob);
+    a.download = filename.replace(/\.enc$/i, "");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    console.error(err);
+    alert("Gagal download atau dekripsi: " + (err.message || JSON.stringify(err)));
   }
-
-  const blob = new Blob([uint8], { type: "application/octet-stream" });
-
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename.replace(".enc", "");
-  a.click();
 }
-
