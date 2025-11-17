@@ -132,23 +132,20 @@ uploadBtn.addEventListener("click", async () => {
     try {
       const bytes = new Uint8Array(e.target.result);
       const wordArray = CryptoJS.lib.WordArray.create(bytes);
-      const encrypted = CryptoJS.AES.encrypt(wordArray, key).toString();
-      const encryptedArr = base64ToUint8Array(encrypted);
 
-      const blob = new Blob([encryptedArr], { type: "application/octet-stream" });
+      // HASIL ENKRIPSI BASE64 STRING
+      const encryptedBase64 = CryptoJS.AES.encrypt(wordArray, key).toString();
+
+      // SIMPAN SEBAGAI TEXT (BUKAN BLOB BINARY)
+      const blob = new Blob([encryptedBase64], { type: "text/plain" });
+
       const path = `${session.user.id}/${file.name}.enc`;
 
-      const { error } = await supabase.storage.from("secure-files")
+      const { error } = await supabase.storage
+        .from("secure-files")
         .upload(path, blob, { upsert: true });
 
       if (error) throw error;
-
-      const { data: signed } = await supabase.storage.from("secure-files")
-        .createSignedUrl(path, 3600);
-
-      downloadLink.textContent = file.name + ".enc";
-      downloadLink.href = signed.signedUrl;
-      output.classList.remove("hidden");
 
       alert("File terenkripsi & berhasil diupload!");
       await listUserFiles(session.user.id);
@@ -157,8 +154,10 @@ uploadBtn.addEventListener("click", async () => {
       alert("Gagal upload: " + err.message);
     }
   };
+
   reader.readAsArrayBuffer(file);
 });
+
 
 // === LIST FILE ===
 async function listUserFiles(uid) {
@@ -197,15 +196,18 @@ async function downloadDecryptedFile(path, filename) {
   const key = prompt("Masukkan kunci enkripsi:");
   if (!key) return;
 
+  // Ambil SEBAGAI TEXT, karena disimpan sebagai base64 string
   const { data } = await supabase.storage.from("secure-files").download(path);
-  const arr = new Uint8Array(await data.arrayBuffer());
-  const wordArray = CryptoJS.lib.WordArray.create(arr);
+  const text = await data.text();  // ⚠️ penting!
 
-  const decrypted = CryptoJS.AES.decrypt({ ciphertext: wordArray }, key);
+  // text = base64 encrypted string
+  const decrypted = CryptoJS.AES.decrypt(text, key);
 
+  // convert kembali ke bytes asli
   const bytes = new Uint8Array(decrypted.sigBytes);
-  for (let i = 0; i < decrypted.sigBytes; i++)
+  for (let i = 0; i < decrypted.sigBytes; i++) {
     bytes[i] = decrypted.words[i >>> 2] >>> (24 - (i % 4) * 8);
+  }
 
   const blob = new Blob([bytes], { type: "application/octet-stream" });
 
